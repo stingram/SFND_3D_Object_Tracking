@@ -242,7 +242,7 @@ void detKeypointsModern(std::vector<cv::KeyPoint> &keypoints, cv::Mat &img, std:
     {
         // cv::Ptr<cv::xfeatures2d::SIFT>
         //detector = cv::xfeatures2d::SIFT::create(); // OLDER VERSIONS OF OPENCV
-	detector = cv::SIFT::create();
+	    detector = cv::SIFT::create();
     }
 
     // Run detection

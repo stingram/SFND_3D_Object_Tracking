@@ -2,7 +2,7 @@
 
 ## FP.1 Match 3D Objects
 
-The "matchBoundingBoxes", which takes as input both the previous and the current data frames and provides as the output the ids of the matched regions of interest (i.e. the boxID property) is implemented where each bounding box is assigned the match candidate with the highest number of occurences. See function defintion for implementation details. 
+The "matchBoundingBoxes", which takes as input both the previous and the current data frames and provides as the output the ids of the matched regions of interest (i.e. the boxID property) is implemented where each bounding box is assigned the match candidate with the highest number of occurences. See function definition for implementation details. 
 
 ## FP.2 Copmute Lidar-Based TTC
 

@@ -141,7 +141,7 @@ void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint
     std::vector<double> euclidean_dists;
     for(auto it=kptMatches.begin();it!=kptMatches.end();it++)
     {
-        cv::KeyPoint kpCurr = kptsCurr.at(it->trainIdx); // DOUBLE CHECK THIS IS IT'S TRAIN OR QUERY
+        cv::KeyPoint kpCurr = kptsCurr.at(it->trainIdx);
         if(!boundingBox.roi.contains(kpCurr.pt))
         {
             cv::KeyPoint kpPrev = kptsPrev.at(it->queryIdx);
@@ -157,7 +157,7 @@ void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint
     // Remove all matches where the distance between the current and previous is too far from the median
     for(auto it=kptMatches.begin();it!=kptMatches.end();it++)
     {
-        cv::KeyPoint kpCurr = kptsCurr.at(it->trainIdx); // DOUBLE CHECK THIS IS IT'S TRAIN OR QUERY
+        cv::KeyPoint kpCurr = kptsCurr.at(it->trainIdx);
         if(!boundingBox.roi.contains(kpCurr.pt))
         {
             cv::KeyPoint kpPrev = kptsPrev.at(it->queryIdx);
@@ -286,14 +286,6 @@ void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
                      std::vector<LidarPoint> &lidarPointsCurr, double frameRate, double &TTC)
 {
     // At this point, we've already got Lidar points associated with a single bounding box in previous and current frame
-    // Implement KD-tree and euclidean clusering like in first project
-    // std::vector<LidarPoint> prev_max_cluster;
-    // std::vector<LidarPoint> curr_max_cluster;
-
-    // Use all the projected points to build the KD-tree
-    // Cluster all the points based on Euclidean distance.
-    // POints with  a large gap (euclidean distance more than certain threshold) will be put into separate clusters
-    // Only choose cluster with maximum size to calculate LiDAR based TTC
 
     // USE IQR to remove outliers for each LidarPoint vector
     // Use smallest X values from previous and current 3D bounding box 
