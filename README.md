@@ -41,88 +41,225 @@ make
 ./3D_object_tracking
 ```
 
-## Writeup, Task FP.0
+## Implementation Write-up
 
-### FP.1 Match 3D objects
-_Lines 224-284 in camFusion_Student.cpp_  
-As suggested, I used a `std::multimap<int,int>` to track pairs of bounding box IDs. I then counted the keypoint correspondences per box pair to determine the best matches between frames.
-```
-// Count the greatest number of matches in the multimap, where each element is {key=currBoxID, val=prevBoxID}
-```
-
-### FP.2 Compute lidar-based TTC
-_Lines 202-221 in camFusion_Student.cpp_  
-In each frame, I took the median x-distance to reduce the impact of outlier lidar points on my TTC estimate. With the constant velocity model, the key equation is as follows.
-```
-TTC = d1 * (1.0 / frameRate) / (d0 - d1);
-```
-
-_Lines 192-199 in camFusion_Student.cpp_  
-To calculate the median, I built a helper function to sort the vector of lidar points.
-```
-void sortLidarPointsX(std::vector<LidarPoint> &lidarPoints)
+### Matching 3D objects
+_Lines 301-367 in camFusion.cpp_  
+The "matchBoundingBoxes" method , which takes as input both the previous and the current data frames and provides as the output the ids of the matched regions of interest (i.e. the boxID property), is implemented where each bounding box is assigned the match candidate with the highest number of occurences. See function definition below for implementation details. 
+```cpp
+void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bbBestMatches, DataFrame &prevFrame, DataFrame &currFrame)
 {
-    // This std::sort with a lambda mutates lidarPoints, a vector of LidarPoint
-    std::sort(lidarPoints.begin(), lidarPoints.end(), [](LidarPoint a, LidarPoint b) {
-        return a.x < b.x;  // Sort ascending on the x coordinate only
-    });
+    std::multimap<int, int> bbox_matches;
+    cv::KeyPoint prevKP;
+    cv::KeyPoint currKP;
+        
+    // loop over all matches
+    for(auto it=matches.begin();it!=matches.end();it++)
+    {
+        // get position of matches from each image
+        // train is prevFrame and query is currFrame
+        // everything is in the Dataframe
+        prevKP = prevFrame.keypoints[it->queryIdx];
+        currKP = currFrame.keypoints[it->trainIdx];
+
+
+        // find out which bboxes in previous frame and current frame contain the match
+        for(auto prev_it=prevFrame.boundingBoxes.begin();prev_it!=prevFrame.boundingBoxes.end();prev_it++)
+        {
+            // add these bbox ids to a multimap where matchIdx is the key and the values are bbox ids
+            if(prev_it->roi.contains(prevKP.pt))
+            {
+                // now see which current frame bounding box this point is in
+                for(auto curr_it=currFrame.boundingBoxes.begin();curr_it!=currFrame.boundingBoxes.end();curr_it++)
+                {
+                    if(curr_it->roi.contains(currKP.pt))
+                    {
+                        bbox_matches.insert(std::pair<int,int>(prev_it->boxID, curr_it->boxID));
+                    }
+                }
+            }
+        }
+    }
+
+    // loop over multimap and count all matches that have the same bbox id in previous frame, then
+    // the current bbox that has the most matches is associated with that previous bbox
+    std::unordered_map<int,int> counts;
+    int max_count, res;
+    typedef std::multimap<int,int>::iterator MMAPIterator;
+    std::pair<MMAPIterator, MMAPIterator> result;
+    
+    for(auto it=bbox_matches.begin(); it!=bbox_matches.end(); it++)
+    {
+        // find mode for each key
+        result = bbox_matches.equal_range(it->first);
+        for(MMAPIterator mit = result.first; mit!= result.second; mit++)
+        {
+            counts[mit->second]++;
+        }
+        // now that I have counts, I pick one with most elements
+        max_count = 0; res = -1;
+        for(auto i: counts)
+        {
+            if(max_count < i.second)
+            {
+                res = i.first;
+                max_count = i.second;
+            }
+        }
+        // res is the current bbox id for given prev bbox id
+        if(res != -1)
+        {
+            bbBestMatches[it->first]=res;
+        }
+        counts.clear();
+    }
 }
 ```
 
-### FP.3 Associate keypoint matches with bounding boxes
-_Lines 133-142 in camFusion_Student.cpp_  
-This function is called for each bounding box, and it loops through every matched keypoint pair in an image. If the keypoint falls within the bounding box region-of-interest (ROI) in the current frame, the keypoint match is associated with the current `BoundingBox` data structure.
+### Computing lidar-based TTC
+_Lines 286-298 in camFusion.cpp_  
+The time-to-collision (TTC) in seconds for all matched 3D objects using only Lidar measurements from the matched bounding boxes between the current and previous frame is computed. Outliers are removed using the InterQuartile Range (IQR) algorithm. Points that lie too far from the median of the lower quartile are not considered when computing TTC.
+```cpp
+void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
+                     std::vector<LidarPoint> &lidarPointsCurr, double frameRate, double &TTC)
+{
+    // At this point, we've already got Lidar points associated with a single bounding box in previous and current frame
 
-### FP.4 Compute mono camera-based TTC
-_Lines 145-189 in camFusion_Student.cpp_  
-The code for this function `computeTTCCamera` draws heavily on the example provided in an earlier lesson. It uses distance ratios on keypoints matched between frames to determine the rate of scale change within an image. This rate of scale change can be used to estimate the TTC.
+    // USE IQR to remove outliers for each LidarPoint vector
+    // Use smallest X values from previous and current 3D bounding box 
+    double prev_X = min_x_lidar_inlier(lidarPointsPrev);
+    double curr_X = min_x_lidar_inlier(lidarPointsCurr);
+
+    // Assume constant velocity model
+    TTC = prev_X * (1.0/frameRate) / (prev_X-curr_X);
+}
 ```
+
+_Lines 233-284 in camFusion.cpp_  
+To calculate minimum inlier points I implemented the function below.
+```cpp
+double min_x_lidar_inlier(std::vector<LidarPoint> &lidarPoints)
+{
+    std::vector<double> x_values;
+    for(int i=0;i<lidarPoints.size();i++)
+    {
+        x_values.push_back(lidarPoints[i].x);
+    }
+    std::sort(x_values.begin(),x_values.end());
+
+    // Q1 = median of n smallest entries
+    // Q3 = median of n largest entries
+    // IQR = Q3 - Q1
+    // if x_i < Q1 - 1.5*IQR, then it's an outlier
+    double median, Q1, Q3, IQR, k, lower_bound;
+    int n;
+    k = 1.5;
+
+    if(x_values.size() % 2 == 0)
+    {
+        median = (x_values[x_values.size()/2] + x_values[x_values.size()/2-1]) / 2.0; 
+        n = x_values.size()/2;
+    }
+    else
+    {
+        median = x_values[x_values.size()/2];
+        n = (x_values.size() - 1) / 2;
+    }
+
+    if(n % 2 == 0)
+    {
+        Q1 = (x_values[n/2] + x_values[n/2-1]) / 2.0;
+        Q3 = (x_values[x_values.size()-n+n/2] + x_values[x_values.size()-n+n/2-1]) / 2.0; 
+    }
+    else
+    {
+        Q1 = x_values[n/2];
+        Q3 = x_values[x_values.size()-n+n/2];
+    }
+
+    IQR = Q3 - Q1;
+    lower_bound = Q1 - k*IQR;
+
+    for(auto it=x_values.begin();it!=x_values.end();it++)
+    {
+        if(*it < lower_bound){
+            x_values.erase(it);
+            it--;
+        }
+    }
+    // Returns smallest inlier x value
+    return x_values[0];
+}
+```
+
+### Associating Keypoint Correspondences with Bounding Boxes
+_Lines 137-171 in camFusion.cpp_  
+The function "clusterKptMatchesWithROI" prepares the TTC computation based on camera measurements by associating keypoint correspondences to bounding boxes which enclose them. All the matches that sastisfy this condiation are to added to vector in the respective bounding boxes only after outliers have been removed based on the euclidean distance between them in relation to all the matches in the bounding box.
+```cpp
+void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, std::vector<cv::DMatch> &kptMatches)
+{
+    // Associate the given bounding box with all keypoint matches whose Curr keypoint is within the ROI
+    // Calculate euclidean distance between the curernt and previous keypoint for each match
+    std::vector<double> euclidean_dists;
+    for(auto it=kptMatches.begin();it!=kptMatches.end();it++)
+    {
+        cv::KeyPoint kpCurr = kptsCurr.at(it->trainIdx);
+        if(!boundingBox.roi.contains(kpCurr.pt))
+        {
+            cv::KeyPoint kpPrev = kptsPrev.at(it->queryIdx);
+            double dist = cv::norm(kpPrev.pt-kpCurr.pt);
+            euclidean_dists.push_back(dist);
+        }
+
+    }
+    // Compute median euclidean distance over all matches
+    std::sort(euclidean_dists.begin(),euclidean_dists.end());
+    double median = euclidean_dists.size() % 2 == 0 ? 0.5*(euclidean_dists[euclidean_dists.size()/2]+euclidean_dists[euclidean_dists.size()/2-1]) : euclidean_dists[euclidean_dists.size()/2];
+    double max_dist = 2.0;
+    // Remove all matches where the distance between the current and previous is too far from the median
+    for(auto it=kptMatches.begin();it!=kptMatches.end();it++)
+    {
+        cv::KeyPoint kpCurr = kptsCurr.at(it->trainIdx);
+        if(!boundingBox.roi.contains(kpCurr.pt))
+        {
+            cv::KeyPoint kpPrev = kptsPrev.at(it->queryIdx);
+            double dist = cv::norm(kpPrev.pt-kpCurr.pt);
+            if(dist < median + max_dist && dist > median - max_dist)
+            {
+                boundingBox.kptMatches.push_back(*it);
+            }
+        }
+    }
+}
+```
+
+### Computing Camera-based TTC
+_Lines 145-189 in camFusion.cpp_  
+The time-to-collision in seconds for all matched 3D objects using only keypoint correspondences from the matching bounding boxes between the current and previous frame is computed in function `computeTTCCamera`. Instead of using the mean to compute TTC, the median is used and is therefore less affected by outliers.
+```cpp
 TTC = (-1.0 / frameRate) / (1 - medianDistRatio);
 ```
-Like the lidar TTC estimation, this function uses the median distance ratio to avoid the impact of outliers. Unfortunately this approach is still **vulnerable to wild miscalculations** (-inf, NaN, etc.) if there are too many mismatched keypoints. Note also that this algorithm calculates the Euclidean distance for every paired combination of keypoints within the bounding box, `O(n^2)` on the number of keypoints.
 
-### FP.5 Performance evaluation, lidar outliers
-I was not able to find any frames where the lidar estimated TTC was unreasonable. It ranged from about 8-15 seconds. I believe the approach of taking the median point, rather than the closest point, has avoided the problem introduced by outliers. I've included some examples of the lidar top-view below.
+### Performance evaluation, lidar outliers
+A couple of examples of where the TTC of the Lidar sensor does not seem plausible are determined based on estimating the distance to the rear of the preceding vehicle from a top view perspective of the Lidar points. As the images below show, there are some points that were not picked up in the previous frame that are closer to the ego car than the preceding vehicle actually is. I believe these points are why TTC from the Lidar sensor in these cases are smaller than expected. Lidar TTC estimates are recorded in FP5.csv.
 
-_Figure 1, near-side outlier_  
-<img src="results/3d-objects_outliers-1.png" width="242" height="247" /><img src="results/lidar-topview_outliers-1.png" width="242" height="247" />
+![Lidar Outlier Example 1](lidar_outlier_01.png)
+*Lidar Outlier Example 1*
 
-_Figure 2, far-side outlier_  
-<img src="results/3d-objects_outliers-2.png" width="242" height="247" /><img src="results/lidar-topview_outliers-2.png" width="242" height="247" />
+![Lidar Outlier Example 2](lidar_outlier_02.png)
+*Lidar Outlier Example 2*
 
-_Figure 3, multiple outliers_  
-<img src="results/3d-objects_outliers-3.png" width="242" height="247" /><img src="results/lidar-topview_outliers-3.png" width="242" height="247" />
+### Performance evaluation, detector/descriptor combinations
+All detector/descriptor combinations were implemented and the camera-based TTC estimates are recorded in FP6.csv. The data and plot of cameras-based TTC are given in the first sheet. 
 
-_Figure 4, a tight group without outliers_  
-<img src="results/3d-objects_outliers-none.png" width="242" height="247" />
 
-### FP.6 Performance evaluation, detector/descriptor combinations
-Certain detector/descriptor combinations, especially the `Harris` and `ORB` detectors, produced very unreliable camera TTC estimates. Others, such as `SIFT`, `FAST`, and `AKAZE` detectors produced reliable results in line with the TTC estimates provided by the lidar sensor alone. Below is a sample of the results matrix, ranked by TTC estimate difference (between the camera and lidar systems).
 
-![Selection from results matrix](results/results_csv.png)
 
-As an example, here is some output from the `AKAZE` detector/descriptor combination with the boolean `perf` flag set:
-```
-$ ./3D_object_tracking
 
-Detector,Descriptor,Frame index,TTC lidar,TTC camera,TTC difference
+Based on the data, it seems like any combinations with ORB as the detector perform the worst. Those have a number of instances where the TTC is -inf and many cases where TTC is very large in the negative direction. With respect to estimating minimum TTC, the best combinations include the following detector/descriptor pairs: Harris/SIFT, Harris/ORB, HARRIS/FREAK. It seems when Harris detector is used the best estimates for TTC are possible. Some examples where the camera-based TTC estimation is inaccurate are shown below.
 
-AKAZE,AKAZE,1,12.5156,12.3444,-0.171208,
-AKAZE,AKAZE,2,12.6142,14.0983,1.48408,
-AKAZE,AKAZE,3,14.091,12.8828,-1.20818,
-AKAZE,AKAZE,4,16.6894,14.4781,-2.21132,
-AKAZE,AKAZE,5,15.9082,16.7468,0.838524,
-AKAZE,AKAZE,6,12.6787,13.8675,1.18879,
-AKAZE,AKAZE,7,11.9844,15.3448,3.36044,
-AKAZE,AKAZE,8,13.1241,14.1378,1.01365,
-AKAZE,AKAZE,9,13.0241,13.8398,0.815652,
-AKAZE,AKAZE,10,11.1746,11.5483,0.373644,
-AKAZE,AKAZE,11,12.8086,12.1341,-0.674506,
-AKAZE,AKAZE,12,8.95978,11.0554,2.09557,
-AKAZE,AKAZE,13,9.96439,11.2852,1.32083,
-AKAZE,AKAZE,14,9.59863,10.5842,0.985564,
-AKAZE,AKAZE,15,8.57352,10.1989,1.62537,
-AKAZE,AKAZE,16,9.51617,9.81256,0.296389,
-AKAZE,AKAZE,17,9.54658,9.06452,-0.482057,
-AKAZE,AKAZE,18,8.3988,8.97386,0.575053,
-```
+![Camera Outlier Example 1](camera_outlier_01.png)
+*Camera Outlier Example 1*
+
+![Camera Outlier Example 2](camera_outlier_02.png)
+*Camera Outlier Example 2*

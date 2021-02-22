@@ -279,6 +279,7 @@ double min_x_lidar_inlier(std::vector<LidarPoint> &lidarPoints)
             it--;
         }
     }
+    // Returns smallest inlier x value
     return x_values[0];
 }
 
@@ -362,8 +363,5 @@ void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bb
             bbBestMatches[it->first]=res;
         }
         counts.clear();
-
     }
-
-
 }
