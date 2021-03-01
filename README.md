@@ -2,13 +2,13 @@
 
 ![Final TTC estimation](results/ttc_estimation.png)
 
-This projects implements a Time-to-Collision (TTC) processing pipeline that would be part of a collision avoidance system on a self-driving vehicle. It makes TTCs estimates based on measurements from Lidar and Radar sensors. This pipeline implements the following:
-- OpenCV keypoint detectors descriptors
+This projects implements a Time-to-Collision (TTC) processing pipeline that would be part of a collision avoidance system on a self-driving vehicle. It makes TTC estimates based on measurements from Lidar and Radar sensors. This pipeline implements the following:
+- OpenCV keypoint detectors/descriptors
 - Object detection using a pre-trained YOLO DNN on COCO dataset (training included images of vehicles) 
 - Methods to track objects of interest by matching keypoints and corresponding bounding boxes across successive images
 - Associating regions in a camera image with lidar points in 3D space
 
-The flowchart illustrates the TTC processing pipeline. Blocks in the orange rectangle use read images from an XYZ camera, detect, extract, and match relevant keypoints. In the blue box and downstream, Lidar points are cropped nd clustered cropped, while objects detected with the YOLO deep neural network from the camera are matched the corrsponding lidar point cloud. These clusters of lidar points and keypoints are tracked across frames by considering the strength of keypoint correspondences within their bounding boxes. Finally, a robust estimation of time-to-collision (TTC) is performed with data from both the lidar and camera sensors.
+The flowchart illustrates the TTC processing pipeline. Blocks in the orange rectangle include reading images from an Point Grey Flea 2 camera, detecting, extracting, and matching relevant keypoints. In the blue box and downstream, Lidar points are cropped and clustered, while objects detected with the YOLO deep neural network from the camera are matched the corrsponding lidar point cloud. These clusters of lidar points and keypoints are tracked across frames by considering the strength of keypoint correspondences within their bounding boxes. Finally, a statistically robust estimation of the TTC is performed with data from both the lidar and camera sensors.
 
 <img src="images/course_code_structure.png" width="779" height="414" />
 
@@ -45,7 +45,7 @@ make
 
 ### Matching 3D objects
 _Lines 301-367 in camFusion.cpp_  
-The "matchBoundingBoxes" method , which takes as input both the previous and the current data frames and provides as the output the ids of the matched regions of interest (i.e. the boxID property), is implemented where each bounding box is assigned the match candidate with the highest number of occurences. See function definition below for implementation details. 
+The `matchBoundingBoxes` method , which takes as input both the previous and the current data frames and provides as the output the ids of the matched regions of interest (i.e. the boxID property), is implemented where each bounding box is assigned the match candidate with the highest number of occurences. See function definition below for implementation details. 
 ```cpp
 void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bbBestMatches, DataFrame &prevFrame, DataFrame &currFrame)
 {
@@ -193,73 +193,129 @@ double min_x_lidar_inlier(std::vector<LidarPoint> &lidarPoints)
 ```
 
 ### Associating Keypoint Correspondences with Bounding Boxes
-_Lines 137-171 in camFusion.cpp_  
-The function "clusterKptMatchesWithROI" prepares the TTC computation based on camera measurements by associating keypoint correspondences to bounding boxes which enclose them. All the matches that sastisfy this condiation are to added to vector in the respective bounding boxes only after outliers have been removed based on the euclidean distance between them in relation to all the matches in the bounding box.
+_Lines 137-167 in camFusion.cpp_  
+The function `clusterKptMatchesWithROI` prepares the TTC computation based on camera measurements by associating keypoint correspondences to bounding boxes which enclose them. All the matches that sastisfy this condition are added to vector in the respective bounding boxes only after outliers have been removed based on the euclidean distance between them in relation to all the matches in the bounding box.
 ```cpp
 void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, std::vector<cv::DMatch> &kptMatches)
 {
     // Associate the given bounding box with all keypoint matches whose Curr keypoint is within the ROI
     // Calculate euclidean distance between the curernt and previous keypoint for each match
-    std::vector<double> euclidean_dists;
+    std::vector<cv::DMatch> kptMatches_roi;
     for(auto it=kptMatches.begin();it!=kptMatches.end();it++)
     {
         cv::KeyPoint kpCurr = kptsCurr.at(it->trainIdx);
-        if(!boundingBox.roi.contains(kpCurr.pt))
+        if(boundingBox.roi.contains(kpCurr.pt))
         {
-            cv::KeyPoint kpPrev = kptsPrev.at(it->queryIdx);
-            double dist = cv::norm(kpPrev.pt-kpCurr.pt);
-            euclidean_dists.push_back(dist);
+            kptMatches_roi.push_back(*it);
+
         }
 
     }
-    // Compute median euclidean distance over all matches
-    std::sort(euclidean_dists.begin(),euclidean_dists.end());
-    double median = euclidean_dists.size() % 2 == 0 ? 0.5*(euclidean_dists[euclidean_dists.size()/2]+euclidean_dists[euclidean_dists.size()/2-1]) : euclidean_dists[euclidean_dists.size()/2];
-    double max_dist = 2.0;
-    // Remove all matches where the distance between the current and previous is too far from the median
-    for(auto it=kptMatches.begin();it!=kptMatches.end();it++)
+    double avg = 0.0;
+    for(cv::DMatch kpt : kptMatches_roi)
     {
-        cv::KeyPoint kpCurr = kptsCurr.at(it->trainIdx);
-        if(!boundingBox.roi.contains(kpCurr.pt))
+        avg += kpt.distance;
+    }
+    avg /= kptMatches_roi.size();
+
+    // Remove all matches where the distance between the current and previous is too large compared to average
+    for(auto it=kptMatches_roi.begin();it!=kptMatches_roi.end();it++)
+    {
+        if(it->distance < avg * 0.7)
         {
-            cv::KeyPoint kpPrev = kptsPrev.at(it->queryIdx);
-            double dist = cv::norm(kpPrev.pt-kpCurr.pt);
-            if(dist < median + max_dist && dist > median - max_dist)
-            {
-                boundingBox.kptMatches.push_back(*it);
-            }
+            boundingBox.kptMatches.push_back(*it);
         }
     }
 }
 ```
 
 ### Computing Camera-based TTC
-_Lines 145-189 in camFusion.cpp_  
+_Lines 171-225 in camFusion.cpp_  
 The time-to-collision in seconds for all matched 3D objects using only keypoint correspondences from the matching bounding boxes between the current and previous frame is computed in function `computeTTCCamera`. Instead of using the mean to compute TTC, the median is used and is therefore less affected by outliers.
 ```cpp
-TTC = (-1.0 / frameRate) / (1 - medianDistRatio);
+void computeTTCCamera(std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, 
+                      std::vector<cv::DMatch> kptMatches, double frameRate, double &TTC, cv::Mat *visImg)
+{
+    // compute distance ratios between all matched keypoints
+    vector<double> distRatios; // stores the distance ratios for all keypoints between curr. and prev. frame
+    for (auto it1 = kptMatches.begin(); it1 != kptMatches.end() - 1; ++it1)
+    { // outer kpt. loop
+
+        // get current keypoint and its matched partner in the prev. frame
+        cv::KeyPoint kpOuterCurr = kptsCurr.at(it1->trainIdx);
+        cv::KeyPoint kpOuterPrev = kptsPrev.at(it1->queryIdx);
+
+        for (auto it2 = kptMatches.begin() + 1; it2 != kptMatches.end(); ++it2)
+        { // inner kpt.-loop
+
+            double minDist = 100.0; // min. required distance
+
+            // get next keypoint and its matched partner in the prev. frame
+            cv::KeyPoint kpInnerCurr = kptsCurr.at(it2->trainIdx);
+            cv::KeyPoint kpInnerPrev = kptsPrev.at(it2->queryIdx);
+
+            // compute distances and distance ratios
+            double distCurr = cv::norm(kpOuterCurr.pt - kpInnerCurr.pt);
+            double distPrev = cv::norm(kpOuterPrev.pt - kpInnerPrev.pt);
+
+            if (distPrev > std::numeric_limits<double>::epsilon() && distCurr >= minDist)
+            { // avoid division by zero
+
+                double distRatio = distCurr / distPrev;
+                distRatios.push_back(distRatio);
+            }
+        } // eof inner loop over all matched kpts
+    }     // eof outer loop over all matched kpts
+
+    // only continue if list of distance ratios is not empty
+    if (distRatios.size() == 0)
+    {
+        TTC = NAN;
+        return;
+    }
+
+    // compute camera-based TTC from distance ratios
+    std::sort(distRatios.begin(), distRatios.end());
+
+    double medianDistRatio;
+    if(distRatios.size() % 2 == 0)
+    {
+        medianDistRatio = 0.5*(distRatios[int(distRatios.size()/2)] + distRatios[int(distRatios.size()/2)-1]);
+    }
+    else
+    {
+        medianDistRatio = distRatios[int(distRatios.size()/2)];
+    }
+    TTC = -(1.0/frameRate) / (1 - medianDistRatio);
+}
 ```
 
-### Performance evaluation, lidar outliers
-A couple of examples of where the TTC of the Lidar sensor does not seem plausible are determined based on estimating the distance to the rear of the preceding vehicle from a top view perspective of the Lidar points. As the images below show, there are some points that were not picked up in the previous frame that are closer to the ego car than the preceding vehicle actually is. I believe these points are why TTC from the Lidar sensor in these cases are smaller than expected. Lidar TTC estimates are recorded in FP5.csv.
+### Performance Evaluation, Lidar Outliers
+TTC estimates from Lidar sensor measurements are determined based on estimating the distance from the ego vehicle to the rear of the preceding vehicle. The images below show a camera view of the projected lidar points directly in front of, and closest to the ego vehicle. These illustrate a couple of examples of where the TTC of the Lidar sensor do not seem plausible. In each image below, there is at least one point that is not picked up in the previous frame, and is relatively farther from the ego car than the preceding vehicle actually is. I believe these points are why TTC from the Lidar sensor in these cases are larger than expected. Lidar TTC estimates are recorded in [FP5.csv](FP5.csv).
 
-![Lidar Outlier Example 1](lidar_outlier_01.png)
-*Lidar Outlier Example 1*
-
-![Lidar Outlier Example 2](lidar_outlier_02.png)
-*Lidar Outlier Example 2*
-
-### Performance evaluation, detector/descriptor combinations
-All detector/descriptor combinations were implemented and the camera-based TTC estimates are recorded in FP6.csv. The data and plot of cameras-based TTC are given in the first sheet. 
+IMAGE               | Analysis
+--------------------| -------------------
+![alt text](figures/lidar_01_outlier.png) | TTC from Lidar is larger than expected due to outliers and nearly 10% fewer lidar points detected in the current frame compared to the previous frame.
+![alt text](figures/lidar_02_outlier.png) | TTC from Lidar is larger than expected due to outliers and a different set of lidar points being measured on the same region (left edge) of the preceding vehicle in the current frame compared to the previous frame. 
 
 
+### Performance Evaluation, Detector/Descriptor combinations
+All detector/descriptor combinations were implemented and the camera-based TTC estimates are recorded in [FP6.csv](FP6.csv). The figures below show TTC estimates from the Lidar Sensor and Camera Sensor. NAN and -inf values are not plotted.
+
+![lidar_ttc.png](figures/lidar_ttc.png)
+Figure 1. Lidar TTC Values
+
+
+![lidar_ttc.png](figures/camera_ttc.png)
+Figure 2. Camera TTC Values. For a larger view, click the image above.
 
 
 
-Based on the data, it seems like any combinations with ORB as the detector perform the worst. Those have a number of instances where the TTC is -inf and many cases where TTC is very large in the negative direction. With respect to estimating minimum TTC, the best combinations include the following detector/descriptor pairs: Harris/SIFT, Harris/ORB, HARRIS/FREAK. It seems when Harris detector is used the best estimates for TTC are possible. Some examples where the camera-based TTC estimation is inaccurate are shown below.
+Based on the data, any combinations with ORB as the detector perform the worst. Those have a more instances where the TTC is -inf and many cases where TTC is very large and in the negative direction. With respect to estimating  TTC, the best combinations include the following detector/descriptor pairs: Shitomasi/BRISK, Shitomasi/BRIEF, Shitomasi/ORB.
 
-![Camera Outlier Example 1](camera_outlier_01.png)
-*Camera Outlier Example 1*
+Some examples where the camera-based TTC estimation is inaccurate are shown below.
 
-![Camera Outlier Example 2](camera_outlier_02.png)
-*Camera Outlier Example 2*
+IMAGE               | Analysis
+--------------------| -------------------
+![alt text](figures/camera_01_outlier.png) | TTC from the Camera sensor is negative infinity in this frame with ORB detector causing the median distance ratio == 1. This results in a division by zero, cascading into a final TTC estimate equal to negative infinity.
+![alt text](figures/camera_02_outlier.png) | Similar to the situation above, the TTC from the Camera sensor is negative infinity in this frame with ORB detector causing the median distance ratio == 1. This results in a division by zero, cascading into a final TTC estimate equal to negative infinity.

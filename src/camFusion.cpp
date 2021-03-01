@@ -43,7 +43,7 @@ void clusterLidarWithROI(std::vector<BoundingBox> &boundingBoxes, std::vector<Li
             smallerBox.width = (*it2).roi.width * (1 - shrinkFactor);
             smallerBox.height = (*it2).roi.height * (1 - shrinkFactor);
 
-            // check wether point is within current bounding box
+            // check whether point is within current bounding box
             if (smallerBox.contains(pt))
             {
                 enclosingBoxes.push_back(it2);
@@ -51,7 +51,7 @@ void clusterLidarWithROI(std::vector<BoundingBox> &boundingBoxes, std::vector<Li
 
         } // eof loop over all bounding boxes
 
-        // check wether point has been enclosed by one or by multiple boxes
+        // check whether point has been enclosed by one or by multiple boxes
         if (enclosingBoxes.size() == 1)
         { 
             // add Lidar point to bounding box
@@ -62,7 +62,7 @@ void clusterLidarWithROI(std::vector<BoundingBox> &boundingBoxes, std::vector<Li
 }
 
 
-void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, cv::Size imageSize, bool bWait)
+void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, cv::Size imageSize, bool bWait, int frame_number)
 {
     // create topview image
     cv::Mat topviewImg(imageSize, CV_8UC3, cv::Scalar(255, 255, 255));
@@ -104,12 +104,12 @@ void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, 
 
         // augment object with some key data
         char str1[200], str2[200];
-        sprintf(str1, "id=%d, #pts=%d", it1->boxID, (int)it1->lidarPoints.size());
+        sprintf(str1, "id=%d, #pts=%d, frame #=%d", it1->boxID, (int)it1->lidarPoints.size(), frame_number);
         // std::cout << str1 << "\n";
-        putText(topviewImg, str1, cv::Point2f(left-250, bottom+50), cv::FONT_HERSHEY_SIMPLEX, 4, currColor); // cv::FONT_ITALIC, 2, currColor);
+        putText(topviewImg, str1, cv::Point2f(left-550, bottom-250), cv::FONT_HERSHEY_SIMPLEX, 4, currColor, 3); // cv::FONT_ITALIC, 2, currColor); // bottom+50
         sprintf(str2, "xmin=%2.2f m, yw=%2.2f m", xwmin, ywmax-ywmin);
         std::cout << str2 << "\n";
-        putText(topviewImg, str2, cv::Point2f(left-250, bottom+125), cv::FONT_HERSHEY_SIMPLEX, 4, currColor); // cv::FONT_ITALIC, 2, currColor);  
+        putText(topviewImg, str2, cv::Point2f(left-550, bottom-100), cv::FONT_HERSHEY_SIMPLEX, 4, currColor, 3); // cv::FONT_ITALIC, 2, currColor); // bttom+125  
     }
 
     // plot distance markers
@@ -118,7 +118,7 @@ void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, 
     for (size_t i = 0; i < nMarkers; ++i)
     {
         int y = (-(i * lineSpacing) * imageSize.height / worldSize.height) + imageSize.height;
-        cv::line(topviewImg, cv::Point(0, y), cv::Point(imageSize.width, y), cv::Scalar(255, 0, 0));
+        cv::line(topviewImg, cv::Point(0, y), cv::Point(imageSize.width, y), cv::Scalar(255, 0, 0), 3);
     }
 
     // display image
@@ -138,34 +138,30 @@ void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint
 {
     // Associate the given bounding box with all keypoint matches whose Curr keypoint is within the ROI
     // Calculate euclidean distance between the curernt and previous keypoint for each match
-    std::vector<double> euclidean_dists;
+    std::vector<cv::DMatch> kptMatches_roi;
     for(auto it=kptMatches.begin();it!=kptMatches.end();it++)
     {
         cv::KeyPoint kpCurr = kptsCurr.at(it->trainIdx);
-        if(!boundingBox.roi.contains(kpCurr.pt))
+        if(boundingBox.roi.contains(kpCurr.pt))
         {
-            cv::KeyPoint kpPrev = kptsPrev.at(it->queryIdx);
-            double dist = cv::norm(kpPrev.pt-kpCurr.pt);
-            euclidean_dists.push_back(dist);
+            kptMatches_roi.push_back(*it);
+
         }
 
     }
-    // Compute median euclidean distance over all matches
-    std::sort(euclidean_dists.begin(),euclidean_dists.end());
-    double median = euclidean_dists.size() % 2 == 0 ? 0.5*(euclidean_dists[euclidean_dists.size()/2]+euclidean_dists[euclidean_dists.size()/2-1]) : euclidean_dists[euclidean_dists.size()/2];
-    double max_dist = 2.0;
-    // Remove all matches where the distance between the current and previous is too far from the median
-    for(auto it=kptMatches.begin();it!=kptMatches.end();it++)
+    double avg = 0.0;
+    for(cv::DMatch kpt : kptMatches_roi)
     {
-        cv::KeyPoint kpCurr = kptsCurr.at(it->trainIdx);
-        if(!boundingBox.roi.contains(kpCurr.pt))
+        avg += kpt.distance;
+    }
+    avg /= kptMatches_roi.size();
+
+    // Remove all matches where the distance between the current and previous is too large compared to average
+    for(auto it=kptMatches_roi.begin();it!=kptMatches_roi.end();it++)
+    {
+        if(it->distance < avg * 0.7)
         {
-            cv::KeyPoint kpPrev = kptsPrev.at(it->queryIdx);
-            double dist = cv::norm(kpPrev.pt-kpCurr.pt);
-            if(dist < median + max_dist && dist > median - max_dist)
-            {
-                boundingBox.kptMatches.push_back(*it);
-            }
+            boundingBox.kptMatches.push_back(*it);
         }
     }
 }
@@ -293,8 +289,10 @@ void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
     double prev_X = min_x_lidar_inlier(lidarPointsPrev);
     double curr_X = min_x_lidar_inlier(lidarPointsCurr);
 
+    std::cout << "Compute TTC Lidar Prev_X: " << prev_X << ", Curr_X: " << curr_X << ".\n";
+
     // Assume constant velocity model
-    TTC = prev_X * (1.0/frameRate) / (prev_X-curr_X);
+    TTC = curr_X * (1.0/frameRate) / (prev_X-curr_X);
 }
 
 
