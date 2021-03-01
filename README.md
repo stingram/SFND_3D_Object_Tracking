@@ -1,6 +1,6 @@
 # SFND 3D Object Tracking
 
-![Final TTC estimation](results/ttc_estimation.png)
+![](figures/ttc_estimation.png)
 
 This projects implements a Time-to-Collision (TTC) processing pipeline that would be part of a collision avoidance system on a self-driving vehicle. It makes TTC estimates based on measurements from Lidar and Radar sensors. This pipeline implements the following:
 - OpenCV keypoint detectors/descriptors
